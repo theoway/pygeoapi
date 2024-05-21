@@ -72,7 +72,10 @@ class MapScriptProvider(BaseProvider):
             self._layer = mapscript.layerObj(self._map)
             self._layer.status = mapscript.MS_ON
 
-            file_extension = self.data.split('.')[-1]
+            if type(self.data) is str:
+                file_extension = self.data.split('.')[-1]
+            else:
+                file_extension = None
 
             if file_extension in ['shp', 'tif']:
                 LOGGER.debug('Setting built-in MapServer driver')
@@ -80,7 +83,7 @@ class MapScriptProvider(BaseProvider):
             else:
                 LOGGER.debug('Setting OGR driver')
                 self._layer.setConnectionType(mapscript.MS_OGR, 'OGR')
-                self._layer.connection = self.data
+                self._layer.connection = self.data['source']
 
             self._layer.type = getattr(mapscript, self.options['type'])
 
@@ -90,8 +93,8 @@ class MapScriptProvider(BaseProvider):
                 self.crs = 4326
 
             self._layer.setProjection(self._epsg2projstring(self.crs))
-
             LOGGER.debug(f'Layer projection: {self._layer.getProjection()}')
+            print(f'Layer projection: {self._layer.getProjection()}')
 
             if 'style' in self.options:
                 if self.options['style'].endswith(('xml', 'sld')):
@@ -115,7 +118,7 @@ class MapScriptProvider(BaseProvider):
             LOGGER.warning(err)
             raise ProviderConnectionError('Cannot connect to map service')
 
-    def query(self, style=None, bbox=[], width=500, height=300, crs='CRS84',
+    def query(self, style=None, bbox=[-0.12, 51.5, -0.09, 51.52], width=264, height=200, crs='CRS84',
               datetime_=None, format_='png', transparent=True, **kwargs):
         """
         Generate map
@@ -138,27 +141,22 @@ class MapScriptProvider(BaseProvider):
             LOGGER.error(f'Bad output format: {image_obj_format}')
             raise ProviderQueryError('Bad image format')
 
-        LOGGER.debug('Setting output map CRS')
+        LOGGER.debug("Reprojecting coordinates to layer's projection")
         try:
-            if crs not in ['CRS84', 4326]:
-                LOGGER.debug('Reprojecting coordinates')
-                prj_dst_text = self._epsg2projstring(int(crs.split("/")[-1]))
+            bbox_crs = crs
 
-                prj_src = mapscript.projectionObj(self._layer.getProjection())
-                prj_dst = mapscript.projectionObj(prj_dst_text)
-
-                rect = mapscript.rectObj(*bbox)
-                _ = rect.project(prj_src, prj_dst)
-
-                map_bbox = [rect.minx, rect.miny, rect.maxx, rect.maxy]
-                map_crs = prj_dst_text
-                self._map.units = mapscript.MS_METERS
-
+            if bbox_crs not in ['CRS84', 4326]:
+                prj_bbox_text = self._epsg2projstring(int(crs.split("/")[-1]))
             else:
-                map_bbox = bbox
-                map_crs = self._epsg2projstring(4326)
-                self._map.units = mapscript.MS_DD
+                prj_bbox_text = self._epsg2projstring(4326)
+            prj_bbox = mapscript.projectionObj(prj_bbox_text)
+            
+            prj_src = mapscript.projectionObj(self._layer.getProjection())
+            rect = mapscript.rectObj(*bbox)
+            _ = rect.project(prj_bbox, prj_src)
 
+            map_bbox = [rect.minx, rect.miny, rect.maxx, rect.maxy]
+            map_crs = self._epsg2projstring(self.crs)
         except MapServerError as err:
             LOGGER.error(err)
             raise ProviderQueryError('bad projection')
@@ -171,19 +169,19 @@ class MapScriptProvider(BaseProvider):
                 LOGGER.debug(f'Setting temporal filter: {fe}')
                 self._layer.setFilter(fe)
 
+        LOGGER.debug('Setting output map CRS')
+        self._map.setProjection(map_crs)
+        self._map.setExtent(*map_bbox)
+
         LOGGER.debug('Setting output image properties')
         fmt = mapscript.outputFormatObj(image_obj_format)
         if transparent:
             fmt.transparent = mapscript.MS_ON
         else:
             fmt.transparent = mapscript.MS_OFF
-
         self._map.setOutputFormat(fmt)
-        self._map.setExtent(*map_bbox)
-        self._map.setSize(width, height)
 
-        self._map.setProjection(map_crs)
-        self._map.setConfigOption('MS_NONSQUARE', 'yes')
+        self._map.setSize(width ,height)
 
         LOGGER.debug(f'Mapfile: {self._map.convertToString()}')
         try:
